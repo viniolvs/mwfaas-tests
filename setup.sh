@@ -8,10 +8,10 @@
 
 set -e # Sai imediatamente se um comando falhar
 
-# clona os repositórios
+# clone submodule
 git submodule update --init --recursive
 
-# --- 1. Parse do Argumento ---
+# --- Parse do Argumento ---
 INSTALL_ENDPOINT=0
 if [[ "$1" == "--install-endpoint" ]]; then
     INSTALL_ENDPOINT=1
@@ -20,19 +20,17 @@ else
     echo "Modo de configuração de DESENVOLVIMENTO (Master) ativado."
 fi
 
-# --- 2. Verificação de Dependências do Sistema (Python e Pip) ---
+# --- Verificação de Dependências do Sistema (Python e Pip) ---
 echo "--- Verificando Python 3 e Pip ---"
 if ! command -v python3 &> /dev/null || ! command -v pip3 &> /dev/null; then
     echo "Python3 ou Pip3 não encontrados. Tentando instalar via apt (requer sudo)..."
-    # '-q' para reduzir o ruído
     sudo apt-get update -q
     sudo apt-get install -y python3 python3-pip python3-venv
 else
     echo "Python 3 e Pip 3 já estão instalados."
 fi
 
-# --- 3. Criação do Ambiente Virtual (Venv) ---
-# Usar um venv é uma boa prática para ambos os cenários.
+# --- Criação do Ambiente Virtual (Venv) ---
 VENV_DIR="venv"
 if [ ! -d "$VENV_DIR" ]; then
     echo "Criando ambiente virtual em ./${VENV_DIR}..."
@@ -44,18 +42,12 @@ fi
 # Define o caminho para o executável pip dentro do venv para evitar ter que 'source'
 PIP_IN_VENV="$VENV_DIR/bin/pip3"
 
-# --- 4. Lógica de Instalação Baseada no Modo ---
 if [ $INSTALL_ENDPOINT -eq 1 ]; then
-    # --- Cenário WORKER (Endpoint) ---
     echo "--- Instalando pacotes para o Worker/Endpoint ---"
-    
-    # Um worker precisa do globus-compute-endpoint
+
     echo "Instalando globus-compute-endpoint..."
     "$PIP_IN_VENV" install globus-compute-endpoint
-    
-    # Um worker também precisa das dependências para as *funções*
-    # que ele executará (ex: google-api-python-client, numpy, etc.).
-    # O usuário deve criar este arquivo.
+
     WORKER_REQ_FILE="worker_requirements.txt"
     if [ -f "$WORKER_REQ_FILE" ]; then
         echo "Instalando dependências de $WORKER_REQ_FILE..."
@@ -65,11 +57,11 @@ if [ $INSTALL_ENDPOINT -eq 1 ]; then
         echo "Para que suas funções funcionem, crie este arquivo com as dependências do worker."
         echo "(Ex: google-api-python-client, numpy, pandas)"
     fi
-    
+
     echo "--- Configuração do Worker concluída ---"
     echo "Para configurar o endpoint, ative o venv ($ source $VENV_DIR/bin/activate) e execute:"
     echo "globus-compute-endpoint configure SEU_NOME_DE_ENDPOINT"
-    
+
 else
     SUBMODULE_REQ_FILE="mwfaas/requirements.txt"
     if [ -f "$SUBMODULE_REQ_FILE" ]; then
