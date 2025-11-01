@@ -1,0 +1,3 @@
+[submodule "mwfaas"]
+	path = mwfaas
+	url = https://github.com/viniolvs/mwfaas.git
