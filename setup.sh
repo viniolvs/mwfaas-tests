@@ -48,7 +48,7 @@ if [ $INSTALL_ENDPOINT -eq 1 ]; then
     echo "Instalando globus-compute-endpoint..."
     "$PIP_IN_VENV" install globus-compute-endpoint
 
-    WORKER_REQ_FILE="worker_requirements.txt"
+    WORKER_REQ_FILE="requirements_worker.txt"
     if [ -f "$WORKER_REQ_FILE" ]; then
         echo "Instalando dependências de $WORKER_REQ_FILE..."
         "$PIP_IN_VENV" install -r "$WORKER_REQ_FILE"
