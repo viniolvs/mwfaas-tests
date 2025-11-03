@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 from typing import Dict, List, Any
 
 from mwfaas.master import Master
@@ -17,6 +18,7 @@ def worker_function(files: List[dict[str, Any]], metadata: Dict[str, Any]):
     import io
     import json
     import gzip
+    import time
     from typing import Any
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
@@ -27,7 +29,7 @@ def worker_function(files: List[dict[str, Any]], metadata: Dict[str, Any]):
         MediaIoBaseUpload,
     )
 
-    # return metadata
+    start_time = time.perf_counter()
 
     if not files or len(files) == 0:
         return []
@@ -124,47 +126,42 @@ def worker_function(files: List[dict[str, Any]], metadata: Dict[str, Any]):
             "Erro no Worker: O parâmetro 'metadata' não continha a chave 'folder_id' necessária para o upload."
         )
 
-    results = []
+    result = {}
+    file = files[0]
+    file_name = file["name"]
+    file_id = file["id"]
+    try:
+        print(f"[Worker] Processando file: {file_name}...")
+        downloaded_bytes_buffer = download_file_to_memory(drive_service, file_id)
 
-    # file_ids é o 'chunk' que o Master enviou
-    for file in files:
-        file_name = file["name"]
-        file_id = file["id"]
-        try:
-            print(f"[Worker] Processando file: {file_name}...")
-            downloaded_bytes_buffer = download_file_to_memory(drive_service, file_id)
+        print(f"[Worker] Compactando {file_name} em memória...")
+        uncompressed_data = downloaded_bytes_buffer.getvalue()
+        compressed_data = gzip.compress(uncompressed_data)
 
-            print(f"[Worker] Compactando {file_name} em memória...")
-            uncompressed_data = downloaded_bytes_buffer.getvalue()
-            compressed_data = gzip.compress(uncompressed_data)
+        # Upload
+        new_filename = f"{file_name}.gz"
+        new_file_id = upload_bytes_to_drive(
+            drive_service,
+            compressed_data,
+            new_filename,
+            folder_id=folder_id,
+        )
+        result = {"original_id": file_id, "new_id": new_file_id, "status": "success"}
 
-            # Upload
-            new_filename = f"{file_name}.gz"
-            new_file_id = upload_bytes_to_drive(
-                drive_service,
-                compressed_data,
-                new_filename,
-                folder_id=folder_id,
-            )
+    except Exception as e:
+        print(f"[Worker] Falha ao processar {file_name}: {e}")
+        result = {
+            "original_id": file_id,
+            "original_name": file_name,
+            "new_id": None,
+            "new_name": None,
+            "status": "failed",
+            "error": str(e),
+        }
 
-            results.append(
-                {"original_id": file_id, "new_id": new_file_id, "status": "success"}
-            )
-
-        except Exception as e:
-            print(f"[Worker] Falha ao processar {file_name}: {e}")
-            results.append(
-                {
-                    "original_id": file_id,
-                    "original_name": file_name,
-                    "new_id": None,
-                    "new_name": None,
-                    "status": "failed",
-                    "error": str(e),
-                }
-            )
-
-    return results
+    end_time = time.perf_counter()
+    result["time_in_seconds"] = end_time - start_time
+    return result
 
 
 def google_drive_auth():
@@ -207,8 +204,6 @@ def list_files_in_folder(service, folder_id):
     try:
         print(f"Listando arquivos da pasta ID: {folder_id}...")
         while True:
-            # A query 'q' filtra pela pasta pai
-            # fields='nextPageToken, files(id, name)' pede apenas os campos que queremos
             response = (
                 service.files()
                 .list(
@@ -225,7 +220,7 @@ def list_files_in_folder(service, folder_id):
 
             page_token = response.get("nextPageToken", None)
             if page_token is None:
-                break  # Sai do loop quando não há mais páginas
+                break
 
         print(f"Encontrados {len(all_files)} arquivos.")
         return all_files
@@ -235,20 +230,17 @@ def list_files_in_folder(service, folder_id):
         return []
 
 
-def main():
+def main(folder_id, output_folder_id):
     service = google_drive_auth()
     if not service:
         return
 
-    folder_id = sys.argv[1]
     files = list_files_in_folder(service=service, folder_id=folder_id)
-    print(f"files: {files}")
 
     with open("token.json", "r") as f:
-        # Lê o conteúdo inteiro do arquivo (que é uma string JSON)
         token_json_string = f.read()
 
-    metadata = {"folder_id": folder_id, "token": token_json_string}
+    metadata = {"folder_id": output_folder_id, "token": token_json_string}
 
     with GlobusComputeCloudManager(auto_authenticate=True) as cloud_manager:
         distribuition = ListDistributionStrategy()
@@ -257,10 +249,15 @@ def main():
         )
 
         try:
+            start_time = time.perf_counter()
             results = master.run(
                 data_input=files,
                 user_function=worker_function,
                 metadata=metadata,
+            )
+            end_time = time.perf_counter()
+            print(
+                f"Tempo de execução master.run(): {end_time - start_time:.4f} segundos"
             )
             print(f"results: {results}")
 
@@ -274,10 +271,8 @@ def main():
         if task_statuses:
             for status in task_statuses:
                 status_info = (
-                    f"  ID da Tarefa: {status.get('id', 'N/A'):<38} "
                     f"Worker ID: {status.get('worker_id', 'N/A')}"
-                    f"Índice do Bloco: {status.get('chunk_index', 'N/A'):<3} "
-                    f"Status: {status.get('status', 'N/A'):<20}"
+                    f" Índice do Bloco: {status.get('index', 'N/A'):<3}"
                 )
                 print(status_info)
         else:
@@ -285,8 +280,24 @@ def main():
 
 
 if __name__ == "__main__":
+    # sys.argv[0] = nome do script
+    # sys.argv[1] = folder_id (obrigatório)
+    # sys.argv[2] = output_folder_id (opcional)
+
     if len(sys.argv) < 2:
-        print("globus_gzip_google_drive <folder_id>")
+        print("Erro: Argumento obrigatório <folder_id> não fornecido.")
+        print("Uso: globus_gzip_google_drive <folder_id> [output_folder_id_opcional]")
         sys.exit(1)
-    else:
-        main()
+
+    if len(sys.argv) > 3:
+        print("Erro: Argumentos demais.")
+        print("Uso: globus_gzip_google_drive <folder_id> [output_folder_id_opcional]")
+        sys.exit(1)
+
+    folder_id = sys.argv[1]
+
+    output_folder_id = folder_id
+    if len(sys.argv) == 3:
+        output_folder_id = sys.argv[2]
+
+    main(folder_id, output_folder_id)
