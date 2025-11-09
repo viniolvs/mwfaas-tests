@@ -11,7 +11,7 @@ MAX_ITER=255
 LINES_PER_WORKER=400
 NUM_EXECUTIONS=5
 
-OUTPUT_DIR="outputs/mandelbrot"
+OUTPUT_DIR="outputs/mandelbrot/${HEIGHT_LINES_PER_WORKER}"
 mkdir -p "$OUTPUT_DIR"
 
 echo "Iniciando $NUM_EXECUTIONS execuções..."
