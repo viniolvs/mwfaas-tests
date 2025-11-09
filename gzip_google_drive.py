@@ -1,25 +1,27 @@
+import math
 import os
 import sys
 import time
-from typing import Dict, List, Any
+from typing import Any, Dict, List
 
-from mwfaas.master import Master
-from mwfaas.globus_compute_manager import GlobusComputeCloudManager
-from mwfaas.list_distribuition_strategy import ListDistributionStrategy
-
-from googleapiclient.errors import HttpError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+
+from mwfaas.globus_compute_manager import GlobusComputeCloudManager
+from mwfaas.list_distribuition_strategy import ListDistributionStrategy
+from mwfaas.master import Master
 
 
 def worker_function(files: List[dict[str, Any]], metadata: Dict[str, Any]):
+    import gzip
     import io
     import json
-    import gzip
     import time
     from typing import Any
+
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
     from googleapiclient.discovery import build
@@ -29,7 +31,7 @@ def worker_function(files: List[dict[str, Any]], metadata: Dict[str, Any]):
         MediaIoBaseUpload,
     )
 
-    start_time = time.perf_counter()
+    all_time_start = time.perf_counter()
 
     if not files or len(files) == 0:
         return []
@@ -126,42 +128,52 @@ def worker_function(files: List[dict[str, Any]], metadata: Dict[str, Any]):
             "Erro no Worker: O parâmetro 'metadata' não continha a chave 'folder_id' necessária para o upload."
         )
 
-    result = {}
-    file = files[0]
-    file_name = file["name"]
-    file_id = file["id"]
-    try:
-        print(f"[Worker] Processando file: {file_name}...")
-        downloaded_bytes_buffer = download_file_to_memory(drive_service, file_id)
+    results = []
+    for file in files:
+        start_time = time.perf_counter()
+        file_name = file["name"]
+        file_id = file["id"]
+        try:
+            print(f"[Worker] Processando file: {file_name}...")
+            downloaded_bytes_buffer = download_file_to_memory(drive_service, file_id)
 
-        print(f"[Worker] Compactando {file_name} em memória...")
-        uncompressed_data = downloaded_bytes_buffer.getvalue()
-        compressed_data = gzip.compress(uncompressed_data)
+            print(f"[Worker] Compactando {file_name} em memória...")
+            uncompressed_data = downloaded_bytes_buffer.getvalue()
+            compressed_data = gzip.compress(uncompressed_data)
 
-        # Upload
-        new_filename = f"{file_name}.gz"
-        new_file_id = upload_bytes_to_drive(
-            drive_service,
-            compressed_data,
-            new_filename,
-            folder_id=folder_id,
-        )
-        result = {"original_id": file_id, "new_id": new_file_id, "status": "success"}
+            # Upload
+            new_filename = f"{file_name}.gz"
+            new_file_id = upload_bytes_to_drive(
+                drive_service,
+                compressed_data,
+                new_filename,
+                folder_id=folder_id,
+            )
 
-    except Exception as e:
-        print(f"[Worker] Falha ao processar {file_name}: {e}")
-        result = {
-            "original_id": file_id,
-            "original_name": file_name,
-            "new_id": None,
-            "new_name": None,
-            "status": "failed",
-            "error": str(e),
-        }
+            end_time = time.perf_counter()
+            results.append(
+                {
+                    "original_id": file_id,
+                    "new_id": new_file_id,
+                    "status": "success",
+                    "time": end_time - start_time,
+                }
+            )
+        except Exception as e:
+            print(f"[Worker] Falha ao processar {file_name}: {e}")
+            results.append(
+                {
+                    "original_id": file_id,
+                    "original_name": file_name,
+                    "new_id": None,
+                    "new_name": None,
+                    "status": "failed",
+                    "error": str(e),
+                }
+            )
 
-    end_time = time.perf_counter()
-    result["time_in_seconds"] = end_time - start_time
-    return result
+    all_time_end = time.perf_counter()
+    return {"data": results, "time": all_time_end - all_time_start}
 
 
 def google_drive_auth():
@@ -243,7 +255,10 @@ def main(folder_id, output_folder_id):
     metadata = {"folder_id": output_folder_id, "token": token_json_string}
 
     with GlobusComputeCloudManager(auto_authenticate=True) as cloud_manager:
-        distribuition = ListDistributionStrategy()
+        worker_count = len(cloud_manager.available_endpoint_ids)
+        print(f"Número de workers disponíveis: {worker_count}")
+        items_per_worker = math.ceil(len(files) / worker_count)
+        distribuition = ListDistributionStrategy(items_per_worker)
         master = Master(
             cloud_manager=cloud_manager, distribution_strategy=distribuition
         )
@@ -260,23 +275,31 @@ def main(folder_id, output_folder_id):
                 f"Tempo de execução master.run(): {end_time - start_time:.4f} segundos"
             )
             print(f"results: {results}")
+            execution_times = []
+            for result in results:
+                if isinstance(result, dict):
+                    execution_times.append(result.get("time", 0))
+            if execution_times:
+                print(
+                    f"\n[Master] Tempo médio de execução por worker: {sum(execution_times) / len(execution_times):.4f}s"
+                )
+                print(
+                    f"[Master] Tempo máximo de execução de um worker: {max(execution_times):.4f}s"
+                )
+                print(
+                    f"[Master] Tempo mínimo de execução de um worker: {min(execution_times):.4f}s"
+                )
+                print("[Master] Execution times:", execution_times)
+
+                print(f"results: {results}")
+
+            print("\n" + "-" * 15 + " Status das Tarefas " + "-" * 15)
+            print(master.get_task_statuses())
 
         except Exception as e:
             print(
                 f"\nOcorreu um erro durante a execução do master.run: {type(e).__name__} - {e}"
             )
-
-        print("\n" + "-" * 15 + " Status das Tarefas " + "-" * 15)
-        task_statuses = master.get_task_statuses()
-        if task_statuses:
-            for status in task_statuses:
-                status_info = (
-                    f"Worker ID: {status.get('worker_id', 'N/A')}"
-                    f" Índice do Bloco: {status.get('index', 'N/A'):<3}"
-                )
-                print(status_info)
-        else:
-            print("Nenhum status de tarefa disponível.")
 
 
 if __name__ == "__main__":
