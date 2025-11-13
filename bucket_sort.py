@@ -1,9 +1,9 @@
+import argparse
 import json
-import os
 import sys
 import time
 from collections import defaultdict
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 import cloudpickle
 
@@ -47,10 +47,7 @@ def distribute_into_buckets_local(
     return bucket_list
 
 
-def main(json_filepath: str, num_buckets: int):
-    """
-    Função principal que agora recebe os argumentos validados.
-    """
+def prepare_data(json_filepath: str, num_buckets: int) -> Tuple[List[List[int]], int]:
     print(f"[Master] Lendo dados de entrada do arquivo: {json_filepath}...")
     print(f"[Master] Usando {num_buckets} baldes para a distribuição.")
 
@@ -63,7 +60,7 @@ def main(json_filepath: str, num_buckets: int):
 
         if not full_data_list:
             print("Arquivo JSON está vazio. Encerrando.")
-            return
+            sys.exit(0)
 
         NUM_ITENS = len(full_data_list)
         MAX_VALUE = max(full_data_list)
@@ -89,7 +86,7 @@ def main(json_filepath: str, num_buckets: int):
     )
 
     print("\n[Master] Analisando e filtrando baldes para envio...")
-    tasks_to_run = []
+    tasks_to_run: List[List[int]] = []
     total_payload_mb = 0
 
     for i, bucket in enumerate(unsorted_buckets):
@@ -110,6 +107,15 @@ def main(json_filepath: str, num_buckets: int):
         f"\n[Master] {len(tasks_to_run)} baldes não-vazios serão enviados para ordenação."
     )
     print(f"[Master] Carga de trabalho total (Payload): {total_payload_mb:.2f} MB")
+    return tasks_to_run, len(full_data_list)
+
+
+def main(json_filepath: str, num_buckets: int):
+    """
+    Função principal que agora recebe os argumentos validados.
+    """
+
+    tasks_to_run, num_items = prepare_data(json_filepath, num_buckets)
 
     with GlobusComputeCloudManager() as cloud_manager:
         strategy = ListDistributionStrategy(items_per_chunk=1)
@@ -122,7 +128,6 @@ def main(json_filepath: str, num_buckets: int):
             metadata=None,
         )
         end_time = time.perf_counter()
-        print(f"Tempo de execução master.run(): {end_time - start_time:.4f} segundos")
 
         print("\n--- FASE DE AGREGAÇÃO (Concatenando resultados no Master) ---")
         execution_times = []
@@ -136,6 +141,7 @@ def main(json_filepath: str, num_buckets: int):
         for bucket in sorted_buckets:
             final_sorted_list.extend(bucket)
 
+        print(f"Tempo de execução master.run(): {end_time - start_time:.4f} segundos")
         if execution_times:
             print(
                 f"\n[Master] Tempo médio de execução por worker: {sum(execution_times) / len(execution_times):.4f}s"
@@ -151,7 +157,7 @@ def main(json_filepath: str, num_buckets: int):
         print("\n" + "-" * 15 + " Status das Tarefas " + "-" * 15)
         print(master.get_task_statuses())
 
-        if len(final_sorted_list) == len(full_data_list):
+        if len(final_sorted_list) == num_items:
             print("VERIFICAÇÃO: Sucesso! O tamanho da lista final bate com a original.")
         else:
             print(
@@ -159,29 +165,79 @@ def main(json_filepath: str, num_buckets: int):
             )
 
 
-if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Erro: Argumentos faltando.")
+def main_local(json_filepath: str, num_buckets: int):
+    tasks_to_run, num_items = prepare_data(json_filepath, num_buckets)
+    results = []
+
+    start_time = time.perf_counter()
+    for bucket in tasks_to_run:
+        results.append(sort_bucket_worker([bucket], {}))
+    end_time = time.perf_counter()
+
+    sorted_buckets = []
+    execution_times = []
+    for result in results:
+        if isinstance(result, dict):
+            sorted_buckets.append(result.get("data", []))
+            execution_times.append(result.get("time", 0))
+
+    final_sorted_list = []
+    for bucket in sorted_buckets:
+        final_sorted_list.extend(bucket)
+
+    if len(final_sorted_list) == num_items:
+        print("VERIFICAÇÃO: Sucesso! O tamanho da lista final bate com a original.")
+    else:
+        print("VERIFICAÇÃO: FALHA! O tamanho da lista final é diferente da original.")
+
+    print(f"[Local] Tempo de execução total: {end_time - start_time:.4f} segundos")
+    if execution_times:
         print(
-            f"Uso: python {os.path.basename(sys.argv[0])} <arquivo.json> [num_buckets_opcional]"
+            f"\n[Local] Tempo médio de execução por worker: {sum(execution_times) / len(execution_times):.4f}s"
         )
+        print(
+            f"[Local] Tempo máximo de execução de um worker: {max(execution_times):.4f}s"
+        )
+        print(
+            f"[Local] Tempo mínimo de execução de um worker: {min(execution_times):.4f}s"
+        )
+        print("[Local] Execution times:", execution_times)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Processa um arquivo JSON e o divide em buckets."
+    )
+
+    parser.add_argument(
+        "json_filepath",
+        type=str,
+        help="Caminho para o arquivo .json de entrada (obrigatório)",
+    )
+
+    parser.add_argument(
+        "num_buckets",
+        type=int,
+        nargs="?",
+        default=100,
+        help="Número de buckets para dividir (opcional, padrão: 100)",
+    )
+
+    parser.add_argument(
+        "--run_local",
+        action="store_true",
+        help="Se presente, executa o script localmente",
+    )
+
+    args = parser.parse_args()
+    if args.num_buckets <= 0:
+        print(
+            f"Erro: O número de buckets ({args.num_buckets}) deve ser um inteiro positivo."
+        )
+        parser.print_usage()
         sys.exit(1)
 
-    json_filepath_arg = sys.argv[1]
-    num_buckets_arg = 100
-
-    if len(sys.argv) >= 3:
-        try:
-            num_buckets_arg = int(sys.argv[2])
-            if num_buckets_arg <= 0:
-                print("Erro: O número de buckets deve ser um inteiro positivo.")
-                sys.exit(1)
-
-        except ValueError:
-            print(f"Erro: O número de buckets '{sys.argv[2]}' não é um inteiro válido.")
-            print(
-                f"Uso: python {os.path.basename(sys.argv[0])} <arquivo.json> [num_buckets_opcional]"
-            )
-            sys.exit(1)
-
-    main(json_filepath_arg, num_buckets_arg)
+    if args.run_local:
+        main_local(args.json_filepath, args.num_buckets)
+    else:
+        main(args.json_filepath, args.num_buckets)
