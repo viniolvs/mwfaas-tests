@@ -1,6 +1,6 @@
+import argparse
 import math
 import os
-import sys
 import time
 from typing import Any, Dict, List
 
@@ -242,6 +242,47 @@ def list_files_in_folder(service, folder_id):
         return []
 
 
+def main_local(folder_id, output_folder_id):
+    print("[Local] Executando script localmente...")
+    service = google_drive_auth()
+    if not service:
+        return
+
+    files = list_files_in_folder(service=service, folder_id=folder_id)
+
+    with open("token.json", "r") as f:
+        token_json_string = f.read()
+
+    metadata = {"folder_id": output_folder_id, "token": token_json_string}
+    start_time = time.perf_counter()
+    res = worker_function(files, metadata)
+    end_time = time.perf_counter()
+
+    if not isinstance(res, dict) or not res.get("data"):
+        print(f"[Local] Erro ao processar os arquivos: {res}")
+        return
+
+    results = res.get("data", [])
+
+    print(f"[Local] Tempo de execução total: {end_time - start_time:.4f} segundos")
+    print(f"results: {results}")
+    execution_times = []
+    for result in results:
+        if isinstance(result, dict):
+            execution_times.append(result.get("time", 0))
+    if execution_times:
+        print(
+            f"\n[Local] Tempo médio de execução por worker: {sum(execution_times) / len(execution_times):.4f}s"
+        )
+        print(
+            f"[Local] Tempo máximo de execução de um worker: {max(execution_times):.4f}s"
+        )
+        print(
+            f"[Local] Tempo mínimo de execução de um worker: {min(execution_times):.4f}s"
+        )
+        print("[Local] Execution times:", execution_times)
+
+
 def main(folder_id, output_folder_id):
     service = google_drive_auth()
     if not service:
@@ -291,8 +332,6 @@ def main(folder_id, output_folder_id):
                 )
                 print("[Master] Execution times:", execution_times)
 
-                print(f"results: {results}")
-
             print("\n" + "-" * 15 + " Status das Tarefas " + "-" * 15)
             print(master.get_task_statuses())
 
@@ -303,24 +342,40 @@ def main(folder_id, output_folder_id):
 
 
 if __name__ == "__main__":
-    # sys.argv[0] = nome do script
-    # sys.argv[1] = folder_id (obrigatório)
-    # sys.argv[2] = output_folder_id (opcional)
+    parser = argparse.ArgumentParser(
+        description="Processa arquivos do Google Drive, opcionalmente via Globus."
+    )
 
-    if len(sys.argv) < 2:
-        print("Erro: Argumento obrigatório <folder_id> não fornecido.")
-        print("Uso: globus_gzip_google_drive <folder_id> [output_folder_id_opcional]")
-        sys.exit(1)
+    parser.add_argument(
+        "folder_id",
+        type=str,
+        help="ID da pasta de origem no Google Drive (obrigatório)",
+    )
 
-    if len(sys.argv) > 3:
-        print("Erro: Argumentos demais.")
-        print("Uso: globus_gzip_google_drive <folder_id> [output_folder_id_opcional]")
-        sys.exit(1)
+    parser.add_argument(
+        "output_folder_id",
+        type=str,
+        nargs="?",  # '?' significa 0 ou 1 argumento
+        default=None,
+        help="ID da pasta de destino (opcional, padrão: mesmo ID da origem)",
+    )
 
-    folder_id = sys.argv[1]
+    parser.add_argument(
+        "--run_local",
+        action="store_true",
+        help="Se presente, executa o script localmente (padrão: executa no Globus)",
+    )
 
-    output_folder_id = folder_id
-    if len(sys.argv) == 3:
-        output_folder_id = sys.argv[2]
+    args = parser.parse_args()
 
-    main(folder_id, output_folder_id)
+    folder_id = args.folder_id
+    run_local = args.run_local  # Será True ou False
+
+    output_folder_id = args.output_folder_id
+    if output_folder_id is None:
+        output_folder_id = folder_id
+
+    if run_local:
+        main_local(folder_id, output_folder_id)
+    else:
+        main(folder_id, output_folder_id)
