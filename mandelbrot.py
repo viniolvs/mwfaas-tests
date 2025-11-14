@@ -189,6 +189,132 @@ def main(
         print(master.get_task_statuses())
 
 
+def main_local(
+    output_filename: str,
+    image_width: int,
+    image_height: int,
+    max_iterations: int,
+    lines_per_worker: int,
+):
+    """
+    Executa o cálculo do Mandelbrot localmente, sem o Globus Compute.
+    """
+    IMAGE_WIDTH = image_width
+    IMAGE_HEIGHT = image_height
+    MAX_ITERATIONS = max_iterations
+    LINES_PER_TASK = lines_per_worker
+
+    total_tasks = (IMAGE_HEIGHT + LINES_PER_TASK - 1) // LINES_PER_TASK
+
+    print(
+        f"[Local] Iniciando renderização de Mandelbrot ({IMAGE_WIDTH}x{IMAGE_HEIGHT})..."
+    )
+    print(f"[Local] Agrupando {IMAGE_HEIGHT} linhas em lotes de {LINES_PER_TASK}.")
+    print(f"[Local] Total de {total_tasks} tarefas locais a serem executadas.")
+
+    tasks_to_run = list(range(IMAGE_HEIGHT))
+
+    task_metadata = {
+        "width": IMAGE_WIDTH,
+        "height": IMAGE_HEIGHT,
+        "max_iter": MAX_ITERATIONS,
+        "x_min": -2.0,
+        "x_max": 1.0,
+        "y_min": -1.0,
+        "y_max": 1.0,
+    }
+
+    print("[Local] Iniciando processamento local...")
+    start_time = time.perf_counter()
+
+    results = []
+    # Itera manualmente sobre os chunks (lotes) de tarefas
+    for i in range(0, IMAGE_HEIGHT, LINES_PER_TASK):
+        # Cria o chunk de linhas (ex: [0, 1, ..., 9])
+        chunk = tasks_to_run[i : i + LINES_PER_TASK]
+        if not chunk:
+            continue
+
+        try:
+            worker_result = mandelbrot_worker(chunk, task_metadata)
+            results.append(worker_result)
+        except Exception as e:
+            print(
+                f"[Local] Erro ao processar o chunk localmente {chunk[0]}...{chunk[-1]}: {e}"
+            )
+
+    end_time = time.perf_counter()
+    print(f"[Local] Tempo de execução local: {end_time - start_time:.4f} segundos")
+    # --- Fim do Bloco de Execução Local ---
+
+    print("\n--- FASE DE AGREGAÇÃO (Construindo imagem final) ---")
+
+    successful_chunks = []
+    execution_times = []
+    chunk_avg_times = []
+    for r in results:
+        if not isinstance(r, dict):
+            print(f"ERRO: Resultado não reconhecido: {r}")
+            continue
+        if "data" in r:
+            successful_chunks.append(r["data"])
+        if "time" in r:
+            execution_times.append(r["time"])
+        if "chunk_avg_time" in r:
+            chunk_avg_times.append(r["chunk_avg_time"])
+
+    successful_rows = []
+    for chunk_result in successful_chunks:
+        successful_rows.extend(chunk_result)
+
+    if not successful_rows:
+        print("Nenhuma tarefa foi concluída com sucesso. Imagem não pode ser gerada.")
+        return
+
+    successful_rows.sort(key=lambda x: x[0])
+
+    img = Image.new("RGB", (IMAGE_WIDTH, IMAGE_HEIGHT), color="black")
+    pixels = img.load()
+    if not pixels:
+        print("Erro: A imagem não pode ser gerada.")
+        return
+
+    for y, row_data in successful_rows:
+        for x, iterations in enumerate(row_data):
+            color_value = 255 - (iterations % 256)
+            pixels[x, y] = (color_value, color_value, color_value)
+
+    img.save(output_filename)
+    print(f"\nImagem salva com sucesso em '{output_filename}'")
+    print(f"Total de {len(successful_rows)} linhas renderizadas.")
+
+    if execution_times:
+        print(
+            f"\n[Local] Tempo médio de execução por worker: {sum(execution_times) / len(execution_times):.4f}s"
+        )
+        print(
+            f"[Local] Tempo máximo de execução de um worker: {max(execution_times):.4f}s"
+        )
+        print(
+            f"[Local] Tempo mínimo de execução de um worker: {min(execution_times):.4f}s"
+        )
+        print("[Local] Execution times:", execution_times)
+
+    if chunk_avg_times:
+        print(
+            f"\n[Local] Tempo médio de execução por chunk: {sum(chunk_avg_times) / len(chunk_avg_times):.4f}s"
+        )
+        print(
+            f"[Local] Tempo máximo de execução de um chunk: {max(chunk_avg_times):.4f}s"
+        )
+        print(
+            f"[Local] Tempo mínimo de execução de um chunk: {min(chunk_avg_times):.4f}s"
+        )
+        print("[Local] Chunk average times:", chunk_avg_times)
+
+    print("\n[Local] Execução local concluída.")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Executa o framework mwfaas para renderizar um fractal Mandelbrot.",
@@ -218,16 +344,31 @@ if __name__ == "__main__":
         help="Número de linhas de pixel a serem agrupadas em cada tarefa (chunk).",
     )
 
+    parser.add_argument(
+        "--run_local",
+        action="store_true",
+        help="Se presente, executa o script localmente",
+    )
+
     args = parser.parse_args()
 
     try:
-        main(
-            output_filename=args.output_filename,
-            image_width=args.width,
-            image_height=args.height,
-            max_iterations=args.iter,
-            lines_per_worker=args.lines,
-        )
+        if args.run_local:
+            main_local(
+                output_filename=args.output_filename,
+                image_width=args.width,
+                image_height=args.height,
+                max_iterations=args.iter,
+                lines_per_worker=args.lines,
+            )
+        else:
+            main(
+                output_filename=args.output_filename,
+                image_width=args.width,
+                image_height=args.height,
+                max_iterations=args.iter,
+                lines_per_worker=args.lines,
+            )
     except Exception as e:
         print("\nERRO: Uma falha inesperada ocorreu durante a execução:")
         print(f"{type(e).__name__}: {e}")
