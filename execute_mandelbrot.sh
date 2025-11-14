@@ -12,7 +12,7 @@ LINES_PER_WORKER=100
 
 NUM_EXECUTIONS=5
 
-OUTPUT_DIR="outputs/mandelbrot/${HEIGHT}_{$LINES_PER_WORKER}"
+OUTPUT_DIR="outputs/mandelbrot/${HEIGHT}_${LINES_PER_WORKER}"
 mkdir -p "$OUTPUT_DIR"
 
 echo "Iniciando $NUM_EXECUTIONS execuções..."
