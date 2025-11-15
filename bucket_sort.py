@@ -13,16 +13,20 @@ from mwfaas.master import Master
 
 
 def sort_bucket_worker(
-    chunk: List[List[int]], metadata: Dict[str, Any]
+    chunk: List[Tuple[int, List[int]]], metadata: Dict[str, Any]
 ) -> Dict[str, Any]:
     import time
 
     try:
         start_time = time.perf_counter()
-        bucket_to_sort = chunk[0]
+        bucket_index, bucket_to_sort = chunk[0]
         bucket_to_sort.sort()
         end_time = time.perf_counter()
-        return {"time": end_time - start_time, "data": bucket_to_sort}
+        return {
+            "time": end_time - start_time,
+            "data": bucket_to_sort,
+            "index": bucket_index,
+        }
 
     except Exception as e:
         print(f"[Worker] Erro ao tentar ordenar o chunk: {e}")
@@ -47,7 +51,9 @@ def distribute_into_buckets_local(
     return bucket_list
 
 
-def prepare_data(json_filepath: str, num_buckets: int) -> Tuple[List[List[int]], int]:
+def prepare_data(
+    json_filepath: str, num_buckets: int
+) -> Tuple[List[Tuple[int, List[int]]], int]:
     print(f"[Master] Lendo dados de entrada do arquivo: {json_filepath}...")
     print(f"[Master] Usando {num_buckets} baldes para a distribuição.")
 
@@ -86,7 +92,7 @@ def prepare_data(json_filepath: str, num_buckets: int) -> Tuple[List[List[int]],
     )
 
     print("\n[Master] Analisando e filtrando baldes para envio...")
-    tasks_to_run: List[List[int]] = []
+    tasks_to_run: List[Tuple[int, List[int]]] = []  # <-- Para isso
     total_payload_mb = 0
 
     for i, bucket in enumerate(unsorted_buckets):
@@ -97,7 +103,7 @@ def prepare_data(json_filepath: str, num_buckets: int) -> Tuple[List[List[int]],
             print(
                 f"  - Balde {i}: {len(bucket):,} itens, Tamanho (Payload): {size_in_mb:.2f} MB"
             )
-            tasks_to_run.append(bucket)
+            tasks_to_run.append((i, bucket))
             total_payload_mb += size_in_mb
 
         else:
@@ -131,15 +137,21 @@ def main(json_filepath: str, num_buckets: int):
 
         print("\n--- FASE DE AGREGAÇÃO (Concatenando resultados no Master) ---")
         execution_times = []
-        sorted_buckets = []
+        num_tasks = len(tasks_to_run)
+        sorted_buckets_in_order = [None] * num_tasks
         for result in sorted_buckets_results:
             if isinstance(result, dict):
-                sorted_buckets.append(result.get("data", []))
-                execution_times.append(result.get("time", 0))
+                idx = result.get("index")
+                data = result.get("data", [])
+                exec_time = result.get("time", 0)
+                if idx is not None:
+                    sorted_buckets_in_order[idx] = data
+                    execution_times.append(exec_time)
 
         final_sorted_list = []
-        for bucket in sorted_buckets:
-            final_sorted_list.extend(bucket)
+        for bucket in sorted_buckets_in_order:
+            if bucket:
+                final_sorted_list.extend(bucket)
 
         print(f"Tempo de execução master.run(): {end_time - start_time:.4f} segundos")
         if execution_times:
@@ -163,6 +175,7 @@ def main(json_filepath: str, num_buckets: int):
             print(
                 "VERIFICAÇÃO: FALHA! O tamanho da lista final é diferente da original."
             )
+        # print(f"final_sorted_list: {final_sorted_list}")
 
 
 def main_local(json_filepath: str, num_buckets: int):
@@ -202,6 +215,8 @@ def main_local(json_filepath: str, num_buckets: int):
             f"[Local] Tempo mínimo de execução de um worker: {min(execution_times):.4f}s"
         )
         print("[Local] Execution times:", execution_times)
+
+    # print(f"final_sorted_list: {final_sorted_list}")
 
 
 if __name__ == "__main__":

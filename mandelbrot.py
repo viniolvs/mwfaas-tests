@@ -16,7 +16,6 @@ except ImportError:
 
 
 def mandelbrot_worker(chunk: List[int], metadata: Dict[str, Any]) -> Dict[str, Any]:
-    # ) -> List[Tuple[int, List[int]]]:
     """
     Função do Worker.
     Calcula um LOTE de linhas do conjunto de Mandelbrot.
