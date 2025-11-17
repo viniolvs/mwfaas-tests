@@ -283,7 +283,7 @@ def main_local(folder_id, output_folder_id):
         print("[Local] Execution times:", execution_times)
 
 
-def main(folder_id, output_folder_id):
+def main(folder_id: str, output_folder_id: str, one_per_worker: bool):
     service = google_drive_auth()
     if not service:
         return
@@ -298,7 +298,11 @@ def main(folder_id, output_folder_id):
     with GlobusComputeCloudManager(auto_authenticate=True) as cloud_manager:
         worker_count = len(cloud_manager.available_endpoint_ids)
         print(f"Número de workers disponíveis: {worker_count}")
-        items_per_worker = math.ceil(len(files) / worker_count)
+        items_per_worker = 1
+        if not one_per_worker:
+            items_per_worker = math.ceil(len(files) / worker_count)
+
+        print(f"items_per_worker: {items_per_worker}")
         distribuition = ListDistributionStrategy(items_per_worker)
         master = Master(
             cloud_manager=cloud_manager, distribution_strategy=distribuition
@@ -366,10 +370,16 @@ if __name__ == "__main__":
         help="Se presente, executa o script localmente (padrão: executa no Globus)",
     )
 
+    parser.add_argument(
+        "--one_per_worker",
+        action="store_true",
+    )
+
     args = parser.parse_args()
 
     folder_id = args.folder_id
-    run_local = args.run_local  # Será True ou False
+    run_local = args.run_local
+    one_per_worker = args.one_per_worker
 
     output_folder_id = args.output_folder_id
     if output_folder_id is None:
@@ -378,4 +388,4 @@ if __name__ == "__main__":
     if run_local:
         main_local(folder_id, output_folder_id)
     else:
-        main(folder_id, output_folder_id)
+        main(folder_id, output_folder_id, one_per_worker)
